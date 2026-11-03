@@ -43,7 +43,7 @@ inventory-orchstrator/
 ### 1. Clone the repository
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/Rachi358/inventory-orchstrator.git
 cd inventory-orchstrator
 ```
 
@@ -106,7 +106,24 @@ To stop the containers:
 docker compose down
 ```
 
-The project includes a multi-stage Dockerfile and a Docker Compose configuration for containerized deployment.
+The project includes a multi-stage Dockerfile and a Docker Compose configuration for containerized deployment. SQLite data is persisted using a Docker named volume.
+
+### Verify the Docker Deployment
+
+Check the health endpoint:
+
+```bash
+curl http://localhost:8000/health
+```
+
+Access the inventory endpoint using the configured API key:
+
+```bash
+curl -H "X-Api-Key: docker-development-secret" \
+     http://localhost:8000/api/v1/inventory
+```
+
+Replace `docker-development-secret` with your configured `API_KEY_SECRET` if it differs from the Docker Compose default.
 
 ## API Endpoints
 
@@ -131,19 +148,22 @@ X-Api-Key: your-secret-api-key
 Example:
 
 ```bash
-curl -H "X-Api-Key: your-secret-api-key" http://localhost:8000/api/v1/inventory
+curl -H "X-Api-Key: your-secret-api-key" \
+     http://localhost:8000/api/v1/inventory
 ```
+
+The API key is configured through the `API_KEY_SECRET` environment variable.
 
 ## Inventory Pagination and Filtering
 
 The inventory endpoint supports the following query parameters:
 
-| Parameter   | Description                       | Default |
-|---          |---                                |---      |
-| `limit`     | Number of items to return (1–100) | 10      |
-| `offset`    | Number of items to skip           | 0       |
-| `min_stock` | Filter by minimum stock quantity  | None    |
-| `is_active` | Filter by active status           | true    |
+| Parameter | Description | Default |
+|---|---|---|
+| `limit` | Number of items to return (1–100) | 10 |
+| `offset` | Number of items to skip | 0 |
+| `min_stock` | Filter by minimum stock quantity | None |
+| `is_active` | Filter by active status | true |
 
 Example:
 
@@ -153,7 +173,7 @@ GET /api/v1/inventory?limit=10&offset=0&min_stock=5&is_active=true
 
 ## Inventory Reconciliation
 
-### Example request
+### Example Request
 
 ```json
 {
@@ -172,7 +192,7 @@ GET /api/v1/inventory?limit=10&offset=0&min_stock=5&is_active=true
 
 The API returns `202 Accepted` after receiving the request and schedules the reconciliation task using FastAPI `BackgroundTasks`.
 
-### Reconciliation workflow
+### Reconciliation Workflow
 
 1. The incoming request is validated using Pydantic.
 2. Duplicate SKUs are rejected with HTTP `422`.
@@ -187,15 +207,17 @@ The API returns `202 Accepted` after receiving the request and schedules the rec
 - **Duplicate SKUs:** Duplicate entries are rejected during request validation before processing.
 - **Unknown SKUs:** Reconciliation fails without partially updating inventory.
 - **Audit logging:** Each reconciliation outcome is recorded with its status, timestamp, processed SKU count, and error details when applicable.
-- **Database lock handling:** SQLite lock errors are retried up to three times.
-- **Retry fallback:** If all retry attempts fail, a `RETRY_FALLBACK` audit status is recorded.
+- **Database lock handling:** SQLite lock errors are retried up to three times to handle temporary database contention.
+- **Retry fallback:** If all retry attempts fail, a `RETRY_FALLBACK` audit status is recorded, preserving the final reconciliation outcome.
 - **Successful reconciliation:** Inventory updates and their success audit record are committed together.
 
 ## Technical Notes
 
-### Background Processing
+### Background Processing and Concurrency
 
-FastAPI `BackgroundTasks` is used to process reconciliation after the API accepts the request. This allows the client to receive a response without waiting for the complete stock update operation.
+FastAPI `BackgroundTasks` allows the reconciliation request to return `202 Accepted` without waiting for stock updates to finish.
+
+The worker uses SQLAlchemy database transactions to ensure that stock updates within a reconciliation request are committed together. SQLite write-lock errors are handled through a retry mechanism with up to three attempts. If reconciliation fails, the transaction is rolled back and the outcome is recorded in the audit log.
 
 ### Database Transactions
 

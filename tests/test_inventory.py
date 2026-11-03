@@ -1,5 +1,4 @@
 
-import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -8,6 +7,21 @@ from app.config import settings
 client = TestClient(app)
 
 HEADERS = {"X-Api-Key": settings.API_KEY_SECRET}
+
+
+def get_inventory_skus():
+    response = client.get(
+        "/api/v1/inventory?limit=100&offset=0",
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 200
+
+    products = response.json()["items"]
+    skus = [product["sku"] for product in products]
+
+    assert len(skus) >= 2
+    return skus
 
 
 def test_missing_api_key():
@@ -64,16 +78,18 @@ def test_inventory_offset():
 
 def test_health_endpoint_is_public():
     response = client.get("/health")
+
     assert response.status_code == 200
     assert response.json()["status"] == "healthy"
 
 
-
 def test_reconciliation_returns_202():
+    skus = get_inventory_skus()
+
     payload = {
         "items": [
-            {"sku": "LAPTOP001", "stock_quantity": 50},
-            {"sku": "MOUSE001", "stock_quantity": 150}
+            {"sku": skus[0], "stock_quantity": 50},
+            {"sku": skus[1], "stock_quantity": 150},
         ]
     }
 
@@ -89,9 +105,11 @@ def test_reconciliation_returns_202():
 
 
 def test_reconciliation_persists_audit_log():
+    skus = get_inventory_skus()
+
     payload = {
         "items": [
-            {"sku": "LAPTOP001", "stock_quantity": 60}
+            {"sku": skus[0], "stock_quantity": 60}
         ]
     }
 
@@ -115,15 +133,18 @@ def test_reconciliation_persists_audit_log():
     assert audit_data["count"] >= 1
 
     latest_log = audit_data["items"][0]
+
     assert latest_log["status"] == "SUCCESS"
     assert latest_log["skus_processed"] >= 1
 
 
 def test_duplicate_sku_returns_422():
+    skus = get_inventory_skus()
+
     payload = {
         "items": [
-            {"sku": "LAPTOP001", "stock_quantity": 50},
-            {"sku": "LAPTOP001", "stock_quantity": 70},
+            {"sku": skus[0], "stock_quantity": 50},
+            {"sku": skus[0], "stock_quantity": 70},
         ]
     }
 

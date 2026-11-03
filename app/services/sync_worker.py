@@ -21,7 +21,8 @@ class UnknownSKUError(Exception):
 
 
 def is_sqlite_lock_error(exc: OperationalError) -> bool:
-    """Check whether the SQLite error is caused by database locking."""
+    """Identify SQLite database locking or busy errors."""
+
     error_message = str(exc).lower()
 
     return (
@@ -37,29 +38,41 @@ async def _record_audit(
     skus_processed: int,
     error_message: str | None,
 ):
-    """Persist an audit record using an independent session."""
+    """
+    Persist failure or retry-fallback audit records
+    using an independent database session.
+    """
+
     try:
         async with AsyncSessionLocal() as session:
             async with session.begin():
                 session.add(
                     ReconciliationAuditLog(
-                        status="SUCCESS",
+                        status=status,
                         skus_processed=skus_processed,
-                        error_message=None,
+                        error_message=error_message,
                     )
                 )
 
     except Exception:
-        logger.exception("Failed to persist reconciliation audit log")
+        logger.exception(
+            "Failed to persist reconciliation audit log",
+            extra={
+                "audit_status": status,
+                "skus_processed": skus_processed,
+            },
+        )
 
 
 async def process_reconciliation(items: list[dict]):
     """
-    Process inventory updates in a background session.
+    Process inventory reconciliation asynchronously.
 
-    All stock updates and the SUCCESS audit log are committed
-    in one transaction. SQLite lock errors trigger retries.
-    Unknown SKUs fail the entire transaction.
+    Product updates and the SUCCESS audit record are committed
+    atomically within a single transaction.
+
+    SQLite lock errors trigger up to MAX_RETRIES attempts.
+    Unknown SKUs cause the entire transaction to roll back.
     """
 
     for attempt in range(1, MAX_RETRIES + 1):
@@ -74,7 +87,9 @@ async def process_reconciliation(items: list[dict]):
                     skus = [item["sku"] for item in items]
 
                     result = await session.execute(
-                        select(Product).where(Product.sku.in_(skus))
+                        select(Product).where(
+                            Product.sku.in_(skus)
+                        )
                     )
 
                     products = {
@@ -96,7 +111,9 @@ async def process_reconciliation(items: list[dict]):
 
                         await session.execute(
                             update(Product)
-                            .where(Product.sku == item["sku"])
+                            .where(
+                                Product.sku == item["sku"]
+                            )
                             .values(
                                 stock_quantity=item["stock_quantity"]
                             )
@@ -104,7 +121,7 @@ async def process_reconciliation(items: list[dict]):
 
                     skus_processed = len(items)
 
-                    # SUCCESS audit is part of the same transaction.
+                    # Product updates and SUCCESS audit commit together.
                     session.add(
                         ReconciliationAuditLog(
                             status="SUCCESS",
@@ -113,7 +130,7 @@ async def process_reconciliation(items: list[dict]):
                         )
                     )
 
-            # Transaction committed successfully.
+            # The transaction committed successfully.
             log_event(
                 "reconciliation_completed",
                 attempt=attempt,
@@ -152,16 +169,21 @@ async def process_reconciliation(items: list[dict]):
                         error=str(exc),
                     )
 
-                    await asyncio.sleep(RETRY_DELAY * attempt)
+                    await asyncio.sleep(
+                        RETRY_DELAY * attempt
+                    )
+
                     continue
+
+                error_message = (
+                    f"SQLite lock retries exhausted after "
+                    f"{MAX_RETRIES} attempts: {exc}"
+                    )
 
                 await _record_audit(
                     status="RETRY_FALLBACK",
                     skus_processed=0,
-                    error_message=(
-                        f"SQLite lock retries exhausted after "
-                        f"{MAX_RETRIES} attempts: {exc}"
-                    ),
+                    error_message=error_message,
                 )
 
                 log_event(

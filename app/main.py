@@ -3,10 +3,11 @@ import time
 import logging
 import sys
 import json
+
 from contextlib import asynccontextmanager
 
-from fastapi.openapi.utils import get_openapi
 from fastapi import FastAPI, Request
+from fastapi.openapi.utils import get_openapi
 
 from app.config import settings
 from app.database import init_db, engine
@@ -39,11 +40,15 @@ for handler in logging.getLogger().handlers:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
-    logging.info("Application started and database initialized.")
+
+    logging.info(
+        "Application started and database initialized."
+    )
 
     yield
 
     await engine.dispose()
+
     logging.info("Database engine disposed.")
 
 
@@ -55,7 +60,10 @@ app = FastAPI(
 
 
 @app.middleware("http")
-async def add_process_time_header(request: Request, call_next):
+async def add_process_time_header(
+    request: Request,
+    call_next,
+):
     start_time = time.perf_counter()
 
     response = await call_next(request)
@@ -64,14 +72,20 @@ async def add_process_time_header(request: Request, call_next):
         (time.perf_counter() - start_time) * 1000
     )
 
-    response.headers["X-Response-Time-Ms"] = str(process_time_ms)
+    response.headers["X-Response-Time-Ms"] = str(
+        process_time_ms
+    )
 
     return response
 
 
 app.middleware("http")(api_key_middleware)
 
-app.include_router(inventory.router, prefix="/api/v1")
+
+app.include_router(
+    inventory.router,
+    prefix="/api/v1",
+)
 
 
 @app.get("/health")
@@ -100,7 +114,9 @@ def custom_openapi():
     for path, methods in openapi_schema["paths"].items():
         if path != "/health":
             for method, operation in methods.items():
-                operation["security"] = [{"ApiKeyAuth": []}]
+                operation["security"] = [
+                    {"ApiKeyAuth": []}
+                ]
 
     app.openapi_schema = openapi_schema
 
