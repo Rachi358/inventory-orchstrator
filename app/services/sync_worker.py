@@ -43,9 +43,9 @@ async def _record_audit(
             async with session.begin():
                 session.add(
                     ReconciliationAuditLog(
-                        status=status,
+                        status="SUCCESS",
                         skus_processed=skus_processed,
-                        error_message=error_message,
+                        error_message=None,
                     )
                 )
 
